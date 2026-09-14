@@ -530,46 +530,51 @@ async function instrumented(opName, key, fn) {
   }
 }
 const LS_PREFIX = "zk-inv-ls:";
-function hasClaudeStorage() {
-  return typeof window !== "undefined" && typeof window.storage?.get === "function" && typeof window.storage?.set === "function" && typeof window.storage?.list === "function";
+// \u3055\u304F\u3089\u306E\u30EC\u30F3\u30BF\u30EB\u30B5\u30FC\u30D0\u30FC\u306B\u7ACB\u3066\u305FPHP+MySQL\u306E\u4FDD\u5B58API\u306E\u30D9\u30FC\u30B9URL\u3002
+// \u672A\u8A2D\u5B9A(\u958B\u767A\u6642\u306A\u3069)\u306FlocalStorage\u306B\u30D5\u30A9\u30FC\u30EB\u30D0\u30C3\u30AF\u3059\u308B\u3002
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
+const API_KEY = import.meta.env.VITE_API_KEY || "";
+function hasRemoteApi() {
+  return !!API_BASE_URL;
 }
 const STORAGE_TIMEOUT_MS = 2e4;
-function withTimeout(promise, opName, key) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      const e = new Error(`${opName}\u304C${STORAGE_TIMEOUT_MS / 1e3}\u79D2\u4EE5\u5185\u306B\u5FDC\u7B54\u3057\u307E\u305B\u3093\u3067\u3057\u305F(\u30BF\u30A4\u30E0\u30A2\u30A6\u30C8)`);
-      e.name = "TimeoutError";
-      e.__diag = describeError(opName, key, e);
-      reject(e);
-    }, STORAGE_TIMEOUT_MS);
-    promise.then((v) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(v);
-    }, (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(err);
+async function apiFetch(path, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STORAGE_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: { ...options?.headers, ...(API_KEY ? { "X-API-Key": API_KEY } : {}) }
     });
-  });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status}${text ? ` ${text}` : ""}`);
+    }
+    return await res.json();
+  } catch (e) {
+    if (e.name === "AbortError") {
+      const timeoutErr = new Error(`\u4FDD\u5B58API\u304C${STORAGE_TIMEOUT_MS / 1e3}\u79D2\u4EE5\u5185\u306B\u5FDC\u7B54\u3057\u307E\u305B\u3093\u3067\u3057\u305F(\u30BF\u30A4\u30E0\u30A2\u30A6\u30C8)`);
+      timeoutErr.name = "TimeoutError";
+      throw timeoutErr;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 const rawGet = (key) => queuedOp(() => instrumented("rawGet", key, () => {
-  if (hasClaudeStorage()) return withTimeout(window.storage.get(key, true), "rawGet", key);
+  if (hasRemoteApi()) return apiFetch(`/load.php?key=${encodeURIComponent(key)}`);
   const v = localStorage.getItem(LS_PREFIX + key);
   return Promise.resolve(v === null ? null : { key, value: v, shared: true });
 }));
 const rawSet = (key, json) => queuedOp(() => instrumented("rawSet", key, () => {
-  if (hasClaudeStorage()) return withTimeout(window.storage.set(key, json, true), "rawSet", key);
+  if (hasRemoteApi()) return apiFetch(`/save.php`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, value: json }) });
   localStorage.setItem(LS_PREFIX + key, json);
   return Promise.resolve({ key, value: json, shared: true });
 }));
 const rawList = (prefix) => queuedOp(() => instrumented("rawList", prefix, () => {
-  if (hasClaudeStorage()) return withTimeout(window.storage.list(prefix, true), "rawList", prefix);
+  if (hasRemoteApi()) return apiFetch(`/list.php?prefix=${encodeURIComponent(prefix)}`);
   const keys = [];
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);

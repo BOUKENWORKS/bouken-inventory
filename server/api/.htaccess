@@ -1,0 +1,5 @@
+# config.php / config.sample.php / schema.sql への直アクセスを禁止する。
+# (config.php をドキュメントルート外に置けない場合の保険)
+<FilesMatch "^(config\.php|config\.sample\.php|schema\.sql|_common\.php)$">
+    Require all denied
+</FilesMatch>
